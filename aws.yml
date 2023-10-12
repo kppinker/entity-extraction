@@ -1,0 +1,236 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Security Vulnerability Scanning Module
+Transform: 'AWS::Serverless-2016-10-31'
+
+Resources:
+
+  JobBucket:
+      Type: 'AWS::S3::Bucket'
+
+  OutputBucket:
+    Type: 'AWS::S3::Bucket'
+
+  JobRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: glue.amazonaws.com
+              Action: 'sts:AssumeRole'
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+        Policies:
+          - PolicyName: WritePolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'S3:PutObject'
+                  Resource:
+                    - !GetAtt 
+                      - OutputBucket
+                      - Arn
+                    - !Join 
+                      - /
+                      - - !GetAtt 
+                          - OutputBucket
+                          - Arn
+                        - '*'
+          - PolicyName: PropertiesPolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'S3:GetObject'
+                    - 'S3:PutObject'
+                  Resource:
+                    - !GetAtt 
+                      - JobBucket
+                      - Arn
+                    - !Join 
+                      - /
+                      - - !GetAtt 
+                          - JobBucket
+                          - Arn
+                        - '*'
+          - PolicyName: BedrockPolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "bedrock:ListFoundationModels"
+                    - "bedrock:GetFoundationModel"
+                    - "bedrock:InvokeModel" 
+                    - "bedrock:InvokeModelWithResponseStream" 
+                    - "bedrock:CreateModelCustomizationJob" 
+                    - "bedrock:GetModelCustomizationJob" 
+                    - "bedrock:GetFoundationModelAgreementAvailability"
+                    - "bedrock:ListModelCustomizationJobs" 
+                    - "bedrock:StopModelCustomizationJob" 
+                    - "bedrock:GetCustomModel" 
+                    - "bedrock:ListCustomModels" 
+                    - "bedrock:DeleteCustomModel"
+                    - "bedrock:CreateProvisionedModelThroughput" 
+                    - "bedrock:UpdateProvisionedModelThroughput" 
+                    - "bedrock:GetProvisionedModelThroughput" 
+                    - "bedrock:DeleteProvisionedModelThroughput" 
+                    - "bedrock:ListProvisionedModelThroughputs" 
+                    - "bedrock:ListTagsForResource" 
+                    - "bedrock:UntagResource" 
+                    - "bedrock:TagResource"               
+                    - "bedrock:AcceptAcknowledgement"
+                    - "bedrock:GetModelPermission"  
+                    - "bedrock:GetModelInvocationLogging"
+                    - "bedrock:PutModelInvocationLogging"
+                    - "bedrock:CreateFoundationModelAgreement"
+                    - "bedrock:DeleteFoundationModelAgreement"
+                    - "bedrock:ListFoundationModelAgreementOffers"
+                  Resource:
+                    - '*'
+      
+  ExtractionJob:
+    Type: 'AWS::Glue::Job'
+    Properties:
+      Command:
+        Name: pythonshell
+        PythonVersion: '3.9'
+        ScriptLocation: !Sub 's3://${JobBucket}/extraction.py'
+      DefaultArguments:
+        '-additional-python-modules': requests, boto3==1.28.57
+        '--OUTPUT_BUCKET_NAME': !Ref OutputBucket
+      Role: !Ref JobRole
+
+  FunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSXrayFullAccess'
+      Policies:
+        - PolicyName: DeletePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'S3:ListBucket'
+                  - 'S3:DeleteObject'
+                Resource:
+                  - !GetAtt 
+                    - OutputBucket
+                    - Arn
+                  - !Join 
+                    - /
+                    - - !GetAtt 
+                        - OutputBucket
+                        - Arn
+                      - '*'
+                  - !GetAtt 
+                    - JobBucket
+                    - Arn
+                  - !Join 
+                    - /
+                    - - !GetAtt 
+                        - JobBucket
+                        - Arn
+                      - '*'
+        - PolicyName: WritePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'S3:PutObject'
+                Resource:
+                  - !GetAtt 
+                    - JobBucket
+                    - Arn
+                  - !Join 
+                    - /
+                    - - !GetAtt 
+                        - JobBucket
+                        - Arn
+                      - '*'
+
+  ProvisioningFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import cfnresponse
+
+          def handler(event, context):
+
+            request = event["RequestType"]
+
+            if request == "Create":
+              
+              print("Creating")
+
+              code = \
+          """
+          Copy and paste job.py here.
+          """
+
+              boto3.resource("s3").Object(
+                bucket_name=os.environ['JOB_BUCKET_NAME'], 
+                key="extraction.py"
+              ).put(Body=code)
+            
+            if request == "Delete":
+
+              print("Deleting")
+
+              s3 = boto3.resource("s3")
+
+              bucket = s3.Bucket(os.environ['OUTPUT_BUCKET_NAME'])
+              bucket.objects.delete()
+
+              bucket = s3.Bucket(os.environ['JOB_BUCKET_NAME'])
+              bucket.objects.delete()
+            
+            responseData = {}
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")
+      Handler: index.handler
+      MemorySize: 10240
+      Timeout: 900
+      Runtime: python3.11
+      Environment:
+        Variables:
+          JOB_BUCKET_NAME: !Ref JobBucket
+          OUTPUT_BUCKET_NAME: !Ref OutputBucket
+      Role: !GetAtt 
+        - FunctionRole
+        - Arn
+
+  ProvisioningCustomResource:
+    Type: 'Custom::S3Create'
+    Properties:
+      ServiceToken: !GetAtt 
+        - ProvisioningFunction
+        - Arn
+
+Outputs:
+
+  Bucket:
+    Value: !Ref OutputBucket
+
+  Job: 
+    Value: !Ref ExtractionJob
