@@ -59,39 +59,13 @@ Resources:
                           - JobBucket
                           - Arn
                         - '*'
-          - PolicyName: BedrockPolicy
+          - PolicyName: InvokeModelPolicy
             PolicyDocument:
               Version: 2012-10-17
               Statement:
                 - Effect: Allow
                   Action:
-                    - "bedrock:ListFoundationModels"
-                    - "bedrock:GetFoundationModel"
                     - "bedrock:InvokeModel" 
-                    - "bedrock:InvokeModelWithResponseStream" 
-                    - "bedrock:CreateModelCustomizationJob" 
-                    - "bedrock:GetModelCustomizationJob" 
-                    - "bedrock:GetFoundationModelAgreementAvailability"
-                    - "bedrock:ListModelCustomizationJobs" 
-                    - "bedrock:StopModelCustomizationJob" 
-                    - "bedrock:GetCustomModel" 
-                    - "bedrock:ListCustomModels" 
-                    - "bedrock:DeleteCustomModel"
-                    - "bedrock:CreateProvisionedModelThroughput" 
-                    - "bedrock:UpdateProvisionedModelThroughput" 
-                    - "bedrock:GetProvisionedModelThroughput" 
-                    - "bedrock:DeleteProvisionedModelThroughput" 
-                    - "bedrock:ListProvisionedModelThroughputs" 
-                    - "bedrock:ListTagsForResource" 
-                    - "bedrock:UntagResource" 
-                    - "bedrock:TagResource"               
-                    - "bedrock:AcceptAcknowledgement"
-                    - "bedrock:GetModelPermission"  
-                    - "bedrock:GetModelInvocationLogging"
-                    - "bedrock:PutModelInvocationLogging"
-                    - "bedrock:CreateFoundationModelAgreement"
-                    - "bedrock:DeleteFoundationModelAgreement"
-                    - "bedrock:ListFoundationModelAgreementOffers"
                   Resource:
                     - '*'
       
@@ -103,7 +77,7 @@ Resources:
         PythonVersion: '3.9'
         ScriptLocation: !Sub 's3://${JobBucket}/extraction.py'
       DefaultArguments:
-        '-additional-python-modules': requests, boto3==1.28.57
+        '--additional-python-modules': requests, boto3==1.28.57, pandas, awswrangler
         '--OUTPUT_BUCKET_NAME': !Ref OutputBucket
       Role: !Ref JobRole
 
@@ -185,8 +159,52 @@ Resources:
               print("Creating")
 
               code = \
-          """
-          Copy and paste job.py here.
+          r"""
+          import requests
+          import json
+          import boto3
+          import re
+          import pandas as pd
+          import awswrangler as wr
+          import os
+
+          def extract(job):
+              
+              prompt = f"Return a JSON object with the following keys: 'job_title', 'company', and 'salary' from the following JSON:\n {job}"
+              body = json.dumps({
+                  "prompt": f"\n\nHuman: {prompt}\n\nAssistant:",
+                  "max_tokens_to_sample": 100,
+              })
+              
+              response = boto3.client('bedrock-runtime').invoke_model(body=body, modelId="anthropic.claude-v2")
+              
+              response_body = json.loads(response.get("body").read())
+              response_completion = response_body.get("completion")
+              # print(response_completion)
+              
+              response_json = {}
+              matches = re.findall(r'\{.*?\}', response_completion, re.DOTALL)
+              if matches:
+                  response_json = json.loads(matches[0])
+              # print(response_json)
+
+              return response_json
+
+          url = "https://boards-api.greenhouse.io/v1/boards/camundaservices/jobs?content=true"
+          response = requests.get(url)
+          content = json.loads(response.content.decode('utf-8'))
+          jobs = content["jobs"]
+
+          jsons = [extract(job) for job in jobs]
+          # print(jsons)
+
+          df = pd.DataFrame.from_dict(jsons)
+          print(df)
+
+          # wr.s3.to_parquet(
+          #     dataframe=df,
+          #     path=f"s3://{os.environ['OUTPUT_BUCKET_NAME']}/output.parquet"
+          # )
           """
 
               boto3.resource("s3").Object(
